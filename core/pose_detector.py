@@ -1,32 +1,47 @@
 """
 pose_detector.py
 
-Wraps MediaPipe Pose Landmarker to extract simple posture cues:
+Wraps MediaPipe's Tasks API PoseLandmarker to extract simple posture
+cues:
 - head-down posture (nose landmark significantly below shoulder line)
 - stillness (very small landmark movement across frames)
 
 These are intentionally coarse, per the concept paper's scope: they
 are supporting signals, not standalone diagnostic measurements.
+
+NOTE: This uses the newer MediaPipe Tasks API (mediapipe.tasks.python),
+not the older mp.solutions.pose API, which was removed in recent
+MediaPipe releases (0.10.30+).
 """
 
-import mediapipe as mp
 import cv2
+import mediapipe as mp
 import numpy as np
+from mediapipe.tasks import python as mp_python
+from mediapipe.tasks.python import vision as mp_vision
+
+from core.model_downloader import ensure_model
 
 
 class PoseDetector:
-    # MediaPipe Pose landmark indices we care about
+    # PoseLandmarker landmark indices we care about (same indexing as
+    # the older BlazePose model used by mp.solutions.pose)
     NOSE = 0
     LEFT_SHOULDER = 11
     RIGHT_SHOULDER = 12
 
     def __init__(self, min_detection_confidence: float = 0.5, history_len: int = 15):
-        self._mp_pose = mp.solutions.pose
-        self.pose = self._mp_pose.Pose(
-            model_complexity=0,  # lite model -- fast enough for real-time webcam use
-            min_detection_confidence=min_detection_confidence,
+        model_path = ensure_model("pose_landmarker_lite.task")
+
+        base_options = mp_python.BaseOptions(model_asset_path=model_path)
+        options = mp_vision.PoseLandmarkerOptions(
+            base_options=base_options,
+            min_pose_detection_confidence=min_detection_confidence,
             min_tracking_confidence=min_detection_confidence,
+            running_mode=mp_vision.RunningMode.IMAGE,
         )
+        self.landmarker = mp_vision.PoseLandmarker.create_from_options(options)
+
         # Rolling history of nose position for stillness calculation
         self._nose_history = []
         self._history_len = history_len
@@ -41,18 +56,20 @@ class PoseDetector:
         }
         """
         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-        results = self.pose.process(frame_rgb)
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
+        result = self.landmarker.detect(mp_image)
 
-        if not results.pose_landmarks:
+        if not result.pose_landmarks:
             return None
 
-        landmarks = results.pose_landmarks.landmark
+        # Tasks API returns a list of pose landmark lists (one per detected
+        # person) -- take the first detected pose.
+        landmarks = result.pose_landmarks[0]
         nose_y = landmarks[self.NOSE].y
         shoulder_y = (landmarks[self.LEFT_SHOULDER].y + landmarks[self.RIGHT_SHOULDER].y) / 2
 
         # In normalized image coords, y grows downward. If nose is close to
         # or below the shoulder line, that's a strong head-down posture cue.
-        shoulder_span = abs(landmarks[self.LEFT_SHOULDER].y - landmarks[self.RIGHT_SHOULDER].y) + 1e-6
         head_down = (nose_y - shoulder_y) > -0.05  # threshold tuned loosely; adjust after testing
 
         # Stillness: track nose (x, y) over recent frames, flag low movement variance
@@ -73,4 +90,4 @@ class PoseDetector:
         }
 
     def close(self):
-        self.pose.close()
+        self.landmarker.close()

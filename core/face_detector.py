@@ -1,26 +1,34 @@
 """
 face_detector.py
 
-Wraps MediaPipe Face Detection to locate a face in a frame and return
-a cropped region ready to feed into the expression classifier.
+Wraps MediaPipe's Tasks API FaceDetector to locate a face in a frame
+and return a cropped region ready to feed into the expression
+classifier.
 
-MediaPipe Face Detection is used here (rather than Face Mesh) because
-we only need a bounding box for cropping -- Face Mesh's 468 landmarks
-are more detail than the expression model needs, and would just add
-inference cost.
+NOTE: This uses the newer MediaPipe Tasks API (mediapipe.tasks.python),
+not the older mp.solutions.face_detection API, which was removed in
+recent MediaPipe releases (0.10.30+).
 """
 
 import cv2
 import mediapipe as mp
+from mediapipe.tasks import python as mp_python
+from mediapipe.tasks.python import vision as mp_vision
+
+from core.model_downloader import ensure_model
 
 
 class FaceDetector:
     def __init__(self, min_detection_confidence: float = 0.6):
-        self._mp_face_detection = mp.solutions.face_detection
-        self.detector = self._mp_face_detection.FaceDetection(
-            model_selection=0,  # 0 = short-range model, tuned for faces within ~2m (webcam use case)
+        model_path = ensure_model("blaze_face_short_range.tflite")
+
+        base_options = mp_python.BaseOptions(model_asset_path=model_path)
+        options = mp_vision.FaceDetectorOptions(
+            base_options=base_options,
             min_detection_confidence=min_detection_confidence,
+            running_mode=mp_vision.RunningMode.IMAGE,
         )
+        self.detector = mp_vision.FaceDetector.create_from_options(options)
 
     def detect(self, frame_bgr):
         """
@@ -30,18 +38,19 @@ class FaceDetector:
         Coordinates are in pixels, clamped to the frame bounds.
         """
         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-        results = self.detector.process(frame_rgb)
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
+        result = self.detector.detect(mp_image)
 
         detections = []
-        if results.detections:
+        if result.detections:
             h, w, _ = frame_bgr.shape
-            for det in results.detections:
-                box = det.location_data.relative_bounding_box
-                x = max(0, int(box.xmin * w))
-                y = max(0, int(box.ymin * h))
-                bw = min(w - x, int(box.width * w))
-                bh = min(h - y, int(box.height * h))
-                confidence = det.score[0] if det.score else 0.0
+            for det in result.detections:
+                box = det.bounding_box
+                x = max(0, box.origin_x)
+                y = max(0, box.origin_y)
+                bw = min(w - x, box.width)
+                bh = min(h - y, box.height)
+                confidence = det.categories[0].score if det.categories else 0.0
                 detections.append({"bbox": (x, y, bw, bh), "confidence": confidence})
 
         return detections
