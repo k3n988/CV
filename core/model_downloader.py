@@ -20,6 +20,10 @@ MODEL_URLS = {
         "https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
         "pose_landmarker_lite/float16/latest/pose_landmarker_lite.task"
     ),
+    "hand_landmarker.task": (
+        "https://storage.googleapis.com/mediapipe-models/hand_landmarker/"
+        "hand_landmarker/float16/latest/hand_landmarker.task"
+    ),
 }
 
 MODELS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "models")
