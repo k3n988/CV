@@ -11,7 +11,7 @@ import cv2
 
 
 class CameraCapture:
-    def __init__(self, camera_index: int = 0, width: int = 640, height: int = 480):
+    def __init__(self, camera_index: int = 0, width: int = 1280, height: int = 720):
         # CAP_DSHOW is the recommended backend on Windows -- it avoids
         # the slow/blank-frame startup issues that plain cv2.VideoCapture()
         # sometimes has on Windows with certain webcam drivers.

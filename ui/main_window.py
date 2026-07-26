@@ -7,8 +7,8 @@ frame (single loop) to minimize perceived lag between real movement
 and the on-screen overlay. Optionally also renders a sci-fi
 "diagnostic HUD" (core/hud_overlay.py) driven by the same
 face/expression/posture signals used by the response engine.
-and the on-screen overlay.
 """
+
 import cv2
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
@@ -55,7 +55,6 @@ class MainWindow(QMainWindow):
         self.response_engine = ResponseEngine()
         self.hud = HUDOverlay()
 
-
         self.consent_given = False
         self._build_ui()
 
@@ -65,7 +64,6 @@ class MainWindow(QMainWindow):
         self.loop_timer.timeout.connect(self._run_loop)
 
         self._detection_enabled = True
-
         self._hud_enabled = True
 
         self.showMaximized()
@@ -99,6 +97,7 @@ class MainWindow(QMainWindow):
         self.toggle_button.setEnabled(False)
         self.toggle_button.clicked.connect(self._toggle_detection)
         controls.addWidget(self.toggle_button)
+
         self.hud_toggle_button = QPushButton("Hide diagnostic HUD")
         self.hud_toggle_button.setEnabled(False)
         self.hud_toggle_button.clicked.connect(self._toggle_hud)
@@ -123,13 +122,11 @@ class MainWindow(QMainWindow):
             "Pause detection" if self._detection_enabled else "Resume detection"
         )
 
-
     def _toggle_hud(self):
         self._hud_enabled = not self._hud_enabled
         self.hud_toggle_button.setText(
             "Hide diagnostic HUD" if self._hud_enabled else "Show diagnostic HUD"
         )
-
 
     def _run_loop(self):
         success, frame = self.camera.read_frame()
@@ -149,9 +146,7 @@ class MainWindow(QMainWindow):
 
             pose_result = self.pose_detector.detect(small_frame)
             hands_result = self.hand_detector.detect(small_frame)
-
             face_bbox_small = self.face_detector.detect(small_frame)
-
 
             pose_landmarks = pose_result["landmarks"] if pose_result else None
             display_frame = skeleton_drawer.draw_pose_skeleton(display_frame, pose_landmarks)
