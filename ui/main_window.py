@@ -69,7 +69,7 @@ class MainWindow(QMainWindow):
         self._detection_enabled = True
         self._hud_enabled = True
 
-        self.showFullScreen()
+        self.isFullScreen()
 
     def _build_ui(self):
         central = QWidget()

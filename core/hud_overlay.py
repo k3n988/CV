@@ -1,234 +1,44 @@
-"""
-hud_overlay.py
-
-Draws a sci-fi "diagnostic HUD" overlay on top of the webcam feed --
-a circular reticle locked onto the detected face, a left-side signal
-panel, right-side waveform panels, a bottom vitals grid, and a status
-bar driven by the app's real ResponseEngine tier.
-
-All panel/text/reticle sizing is driven by a single `scale` factor
-(see HUDOverlay.__init__) so the whole HUD can be made larger or
-smaller without touching the drawing code -- current default targets
-a compact-but-readable look on a 1280x720 widescreen feed.
-
-Data honesty note: the "signal panel" and "assessment" text are driven
-by real values from ExpressionClassifier / PoseDetector / ResponseEngine.
-The vitals grid (pulse, SpO2, temp, RR) and the "ACTIVITY (SIM)" waveform
-are cosmetic only -- a webcam cannot measure blood oxygen or temperature.
-They're clearly labeled "SIMULATED" in the panel itself so the HUD never
-implies it's reading real biometrics it isn't.
-"""
-
-import math
 import random
 from collections import deque
-
 import cv2
 
-# ---- Palette (BGR) ---------------------------------------------------
-HUD_CYAN = (255, 220, 60)
-HUD_CYAN_DIM = (170, 140, 40)
-HUD_AMBER = (40, 170, 255)
-HUD_RED = (60, 60, 255)
-PANEL_BG = (35, 25, 15)
-
-TIER_COLORS = {1: HUD_CYAN, 2: HUD_AMBER, 3: HUD_RED}
-
-FONT = cv2.FONT_HERSHEY_SIMPLEX
-FONT_SMALL = cv2.FONT_HERSHEY_PLAIN
-
-# Minimum font scale/thickness floors so text never becomes unreadable
-# even if a very small `scale` is passed in.
-MIN_FONT_SCALE = 0.42
-
-
-def _panel_bg(frame, x, y, w, h, alpha=0.45):
-    """Draws a translucent dark rectangle behind panel content."""
-    x2, y2 = x + w, y + h
-    x, y = max(x, 0), max(y, 0)
-    x2, y2 = min(x2, frame.shape[1]), min(y2, frame.shape[0])
-    if x2 <= x or y2 <= y:
-        return
-    roi = frame[y:y2, x:x2]
-    overlay = roi.copy()
-    overlay[:] = PANEL_BG
-    cv2.addWeighted(overlay, alpha, roi, 1 - alpha, 0, dst=roi)
-
-
-def _text(frame, text, org, scale=0.5, color=HUD_CYAN, thickness=1, font=FONT):
-    scale = max(scale, MIN_FONT_SCALE)
-    cv2.putText(frame, text, org, font, scale, color, thickness, cv2.LINE_AA)
-
-
-def _corner_brackets(frame, s, length=26, thickness=2, margin=14, color=HUD_CYAN_DIM):
-    length, margin = int(length * s), int(margin * s)
-    h, w = frame.shape[:2]
-    corners = [
-        ((margin, margin), (1, 0), (0, 1)),
-        ((w - margin, margin), (-1, 0), (0, 1)),
-        ((margin, h - margin), (1, 0), (0, -1)),
-        ((w - margin, h - margin), (-1, 0), (0, -1)),
-    ]
-    for (cx, cy), dx, dy in corners:
-        p1 = (cx, cy)
-        p2 = (cx + dx[0] * length, cy + dx[1] * length)
-        p3 = (cx + dy[0] * length, cy + dy[1] * length)
-        cv2.line(frame, p1, p2, color, thickness, cv2.LINE_AA)
-        cv2.line(frame, p1, p3, color, thickness, cv2.LINE_AA)
-
-
-def _reticle(frame, center, radius, frame_index, locked, s):
-    cx, cy = center
-    color = HUD_CYAN if locked else HUD_CYAN_DIM
-    tick_len = max(4, int(8 * s))
-    dot_r = max(2, int(4 * s))
-
-    cv2.circle(frame, (cx, cy), radius, color, 1, cv2.LINE_AA)
-    cv2.circle(frame, (cx, cy), int(radius * 0.72), color, 1, cv2.LINE_AA)
-
-    # Tick marks every 30 degrees
-    for deg in range(0, 360, 30):
-        rad = math.radians(deg)
-        x1 = int(cx + math.cos(rad) * radius)
-        y1 = int(cy + math.sin(rad) * radius)
-        x2 = int(cx + math.cos(rad) * (radius + tick_len))
-        y2 = int(cy + math.sin(rad) * (radius + tick_len))
-        cv2.line(frame, (x1, y1), (x2, y2), color, 1, cv2.LINE_AA)
-
-    # Small filled dots at top and bottom, like a targeting reticle
-    cv2.circle(frame, (cx, cy - radius), dot_r, color, -1, cv2.LINE_AA)
-    cv2.circle(frame, (cx, cy + radius), dot_r, color, -1, cv2.LINE_AA)
-
-    # Rotating scan arc for a "live" feel
-    if locked:
-        start = (frame_index * 4) % 360
-        arc_offset = max(10, int(14 * s))
-        cv2.ellipse(
-            frame, (cx, cy), (radius + arc_offset, radius + arc_offset), 0,
-            start, start + 50, HUD_CYAN, 2, cv2.LINE_AA,
-        )
-    else:
-        _text(frame, "SEARCHING...", (cx - int(55 * s), cy + radius + int(26 * s)),
-              0.5 * s, HUD_CYAN_DIM)
-
-
-def _signal_panel(frame, x, y, w, h, face_locked, expression_label,
-                   expression_confidence, head_down, still, s):
-    _panel_bg(frame, x, y, w, h)
-    cv2.rectangle(frame, (x, y), (x + w, y + h), HUD_CYAN_DIM, 1, cv2.LINE_AA)
-    pad = int(10 * s)
-    _text(frame, "SIGNALS", (x + pad, y + int(22 * s)), 0.55 * s, HUD_CYAN, 1)
-    cv2.line(frame, (x + pad, y + int(30 * s)), (x + w - pad, y + int(30 * s)),
-              HUD_CYAN_DIM, 1)
-
-    lines = [
-        f"FACE     : {'LOCKED' if face_locked else 'SEARCHING'}",
-        f"EXPR     : {expression_label.upper()} ({expression_confidence * 100:.0f}%)",
-        f"POSTURE  : {'HEAD DOWN' if head_down else 'UPRIGHT'}",
-        f"MOTION   : {'STILL' if still else 'ACTIVE'}",
-    ]
-    line_h = int(18 * s)
-    for i, line in enumerate(lines):
-        _text(frame, line, (x + pad, y + int(50 * s) + i * line_h), 1.0 * s,
-              HUD_CYAN, 1, FONT_SMALL)
-
-
-def _waveform_panel(frame, x, y, w, h, values, color, label, s):
-    _panel_bg(frame, x, y, w, h)
-    cv2.rectangle(frame, (x, y), (x + w, y + h), HUD_CYAN_DIM, 1, cv2.LINE_AA)
-    _text(frame, label, (x + int(8 * s), y + int(16 * s)), 1.0 * s,
-          HUD_CYAN_DIM, 1, FONT_SMALL)
-
-    plot_top = y + int(22 * s)
-    plot_h = h - int(28 * s)
-    if len(values) >= 2 and plot_h > 2:
-        pts = []
-        for i, v in enumerate(values):
-            px = x + int(i / (len(values) - 1) * (w - int(16 * s))) + int(8 * s)
-            py = plot_top + plot_h - int(v * plot_h)
-            pts.append((px, py))
-        for p1, p2 in zip(pts, pts[1:]):
-            cv2.line(frame, p1, p2, color, 1, cv2.LINE_AA)
-
-
-def _vitals_grid(frame, x, y, w, h, vitals, s):
-    _panel_bg(frame, x, y, w, h)
-    cv2.rectangle(frame, (x, y), (x + w, y + h), HUD_CYAN_DIM, 1, cv2.LINE_AA)
-
-    cells = [
-        ("PULSE", f"{vitals['hr']:.0f}", "bpm"),
-        ("SPO2", f"{vitals['spo2']:.0f}", "%"),
-        ("TEMP", f"{vitals['temp']:.1f}", "C"),
-        ("RR", f"{vitals['rr']:.0f}", "/min"),
-    ]
-    cell_w = w // 2
-    cell_h = int(32 * s)
-    pad = int(8 * s)
-    for i, (label, value, unit) in enumerate(cells):
-        cx = x + (i % 2) * cell_w
-        cy = y + pad + (i // 2) * cell_h
-        _text(frame, label, (cx + pad, cy + int(10 * s)), 0.85 * s,
-              HUD_CYAN_DIM, 1, FONT_SMALL)
-        _text(frame, f"{value} {unit}", (cx + pad, cy + int(26 * s)), 1.1 * s,
-              HUD_CYAN, 1, FONT_SMALL)
-
-    _text(frame, "SIMULATED -- NOT A MEDICAL DEVICE", (x + pad, y + h - int(6 * s)),
-          0.8 * s, HUD_CYAN_DIM, 1, FONT_SMALL)
-
-
-def _status_bar(frame, tier, message, s):
-    h_frame, w_frame = frame.shape[:2]
-    bar_h = int(44 * s)
-    y = h_frame - bar_h
-    color = TIER_COLORS.get(tier, HUD_CYAN)
-    _panel_bg(frame, 0, y, w_frame, bar_h, alpha=0.55)
-    cv2.line(frame, (0, y), (w_frame, y), color, 1, cv2.LINE_AA)
-
-    label = f"ASSESSMENT (TIER {tier}): "
-    full_text = label + message
-    font_scale = max(1.1 * s, MIN_FONT_SCALE)
-
-    # Simple wrap-or-truncate so long messages don't overflow the bar.
-    (text_w, _), _ = cv2.getTextSize(full_text, FONT_SMALL, font_scale, 1)
-    max_w = w_frame - int(24 * s)
-    if text_w > max_w:
-        while full_text and cv2.getTextSize(full_text + "...", FONT_SMALL, font_scale, 1)[0][0] > max_w:
-            full_text = full_text[:-1]
-        full_text += "..."
-
-    _text(frame, full_text, (int(12 * s), y + int(28 * s)), font_scale, color, 1, FONT_SMALL)
+from .hud_primitives import (
+    HUD_CYAN, HUD_CYAN_DIM, FONT_SMALL,
+    BRAIN_SCAN_PATH, BODY_SCAN_PATH,
+    _load_rgba, _draw_rgba, _panel_bg, _text,
+    _reticle, _waveform_plot, _status_bar, _frame_border
+)
 
 
 class HUDOverlay:
-    """
-    Stateful HUD renderer. Create one instance and call render() once per
-    frame -- it tracks its own animation counter and slow-moving fake
-    vitals/waveform history internally so the overlay looks "alive"
-    across frames instead of static.
-
-    `scale` controls the overall size of every HUD element (panels,
-    text, reticle). 1.0 is the original full size; the default of 0.7
-    gives a noticeably more compact HUD that still stays readable at
-    typical webcam-window sizes. Lower it further (e.g. 0.55) for an
-    even smaller HUD, or raise it (e.g. 1.0+) for a larger one -- text
-    has a hard readability floor built in so it won't vanish.
-    """
-
-    def __init__(self, waveform_len: int = 60, vitals_update_every_n: int = 6,
-                 scale: float = 0.7):
+    def __init__(self, waveform_len: int = 50, vitals_update_every_n: int = 6, scale: float = 0.75):
         self.scale = scale
         self.frame_index = 0
         self._waveform_len = waveform_len
-        self._expr_wave = deque([0.0] * waveform_len, maxlen=waveform_len)
-        self._sim_wave = deque([0.5] * waveform_len, maxlen=waveform_len)
+        self._expr_wave = deque([0.5] * waveform_len, maxlen=waveform_len)
+        self._sim_wave = deque([0.4] * waveform_len, maxlen=waveform_len)
         self._vitals_update_every_n = vitals_update_every_n
 
-        self._vitals = {"hr": 72.0, "spo2": 98.0, "temp": 36.6, "rr": 15.0}
+        self._vitals = {"hr": 80.0, "spo2": 98.0, "temp": 36.8, "rr": 14.0}
         self._vitals_bounds = {
-            "hr": (58.0, 92.0), "spo2": (95.0, 100.0),
-            "temp": (36.2, 37.1), "rr": (11.0, 19.0),
+            "hr": (65.0, 95.0), "spo2": (96.0, 100.0),
+            "temp": (36.4, 37.2), "rr": (12.0, 18.0),
         }
-        self._vitals_step = {"hr": 1.2, "spo2": 0.3, "temp": 0.04, "rr": 0.4}
+        self._vitals_step = {"hr": 1.0, "spo2": 0.2, "temp": 0.03, "rr": 0.3}
+
+        # Smoothed tracking center
+        self._smooth_center = None
+        self._smooth_radius = None
+
+        # Load scans
+        self._brain_img = _load_rgba(BRAIN_SCAN_PATH)
+        self._body_img = _load_rgba(BODY_SCAN_PATH)
+        if self._body_img is not None:
+            # The hologram PNG includes a large transparent canvas. Trim it so its
+            # visible body can use the diagnostic panel's intended scale.
+            body_bounds = cv2.boundingRect(self._body_img[:, :, 3])
+            bx, by, bw, bh = body_bounds
+            self._body_img = self._body_img[by:by + bh, bx:bx + bw]
 
     def _update_fake_vitals(self):
         if self.frame_index % self._vitals_update_every_n != 0:
@@ -239,63 +49,185 @@ class HUDOverlay:
             self._vitals[key] = max(lo, min(hi, self._vitals[key]))
 
     def render(self, frame_bgr, face_bbox, expression_label, expression_confidence,
-               head_down, still, tier, tier_message, title="STATUS"):
-        """
-        Draws the full HUD onto frame_bgr in place and returns it.
-
-        face_bbox: (x, y, w, h) in frame_bgr's pixel space, or None.
-        expression_label/confidence: from ExpressionClassifier.classify().
-        head_down/still: from PoseDetector.detect() (False if unavailable).
-        tier/tier_message: from ResponseEngine.evaluate().
-        """
+               head_down, still, tier, tier_message, title="DIAGNOSIS"):
+        """Draws the Big Hero 6 diagnostic HUD overlay onto frame_bgr."""
         s = self.scale
+        overlay_s = s * 1.5
         h, w = frame_bgr.shape[:2]
         self.frame_index += 1
         self._update_fake_vitals()
 
+        margin = max(14, int(22 * s))
+
+        # -------------------------------------------------------------
+        # 1. FACE TRACKING SMOOTHING (STAYS LOCKED ON HEAD) -- unchanged
+        # -------------------------------------------------------------
         face_locked = face_bbox is not None
         if face_locked:
             fx, fy, fw, fh = face_bbox
-            center = (fx + fw // 2, fy + fh // 2)
-            radius = int(max(fw, fh) * 0.85)
+            target_center = (fx + fw // 2, fy + fh // 2)
+            target_radius = int(max(fw, fh) * 0.82)
         else:
-            center = (w // 2, h // 2)
-            radius = int(min(w, h) * 0.22)
+            target_center = (w // 2, h // 2)
+            target_radius = int(min(w, h) * 0.22)
 
-        # Scrolling waveforms: one tied to a real signal, one decorative.
+        smooth_alpha = 0.28
+        if self._smooth_center is None:
+            self._smooth_center = target_center
+            self._smooth_radius = target_radius
+        else:
+            self._smooth_center = (
+                int(self._smooth_center[0] + (target_center[0] - self._smooth_center[0]) * smooth_alpha),
+                int(self._smooth_center[1] + (target_center[1] - self._smooth_center[1]) * smooth_alpha),
+            )
+            self._smooth_radius = int(
+                self._smooth_radius + (target_radius - self._smooth_radius) * smooth_alpha
+            )
+
+        # Keep the pre-existing right-column anchors unchanged.
+        left_panel_w = min(int(w * 0.28), int(360 * s))
+        left_panel_w = max(left_panel_w, int(255 * s))
+        status_bar_h = int(38 * s)
+        bottom_floor = h - int(38 * overlay_s) - int(14 * s)
+        title_h = int(42 * s)
+        header_line_y = margin + title_h + int(10 * s)
+        panel_y = header_line_y + int(14 * s)
+        inner_pad_y = int(14 * s)
+        content_top = panel_y + inner_pad_y
+        pad = int(10 * s)
+
+        # -------------------------------------------------------------
+        # 2. LEFT DIAGNOSTIC HUD -- compact 1920x1080 reference layout
+        # -------------------------------------------------------------
+        layout_s = min(w / 1920.0, h / 1080.0)
+        lx = lambda value: int(value * layout_s)
+        ly = lambda value: int(value * layout_s)
+
+        title_x, title_y = lx(70), ly(72)
+        _text(frame_bgr, title, (title_x, title_y), 2.55 * layout_s, HUD_CYAN, 3)
+        divider_y = ly(95)
+        cv2.line(frame_bgr, (lx(70), divider_y), (lx(520), divider_y), HUD_CYAN_DIM, 1, cv2.LINE_AA)
+        cv2.line(frame_bgr, (lx(55), divider_y), (lx(65), divider_y), HUD_CYAN_DIM, 1, cv2.LINE_AA)
+        cv2.line(frame_bgr, (lx(520), divider_y), (lx(535), ly(82)), HUD_CYAN_DIM, 1, cv2.LINE_AA)
+
+        # Large hologram anchor, vertically aligned with the adjacent diagnostics.
+        body_x, body_y = lx(48), ly(104)
+        body_w, body_h = lx(338), ly(593)
+        _draw_rgba(frame_bgr, self._body_img, body_x, body_y, body_w, body_h, opacity=0.95)
+
+        symp_x, symp_w = lx(410), lx(405)
+        symp_title_y = ly(152)
+        _text(frame_bgr, "SYMPTOMS", (symp_x, symp_title_y), 2.22 * layout_s, HUD_CYAN, 2)
+        symp_underline_y = ly(175)
+        cv2.line(frame_bgr, (symp_x, symp_underline_y), (symp_x + symp_w, symp_underline_y),
+                 HUD_CYAN_DIM, 1, cv2.LINE_AA)
+
+        symptoms = [
+            f"EXPR: {expression_label.upper()}",
+            f"CONF: {expression_confidence * 100:.0f}%",
+            f"POSTURE: {'HEAD DOWN' if head_down else 'UPRIGHT'}",
+            f"MOTION: {'STILL' if still else 'ACTIVE'}",
+            "Vocal Fluctuation",
+            "Emotional Instability",
+        ]
+        line_h = ly(39)
+        symp_list_top = ly(210)
+        for i, text in enumerate(symptoms):
+            _text(frame_bgr, text, (symp_x, symp_list_top + i * line_h),
+                  1.72 * layout_s, HUD_CYAN_DIM, 2, FONT_SMALL)
+
+        vit_w, vit_h = lx(428), ly(225)
+        # Keep vitals attached to the lower-right HUD edge, above the footer.
+        vit_x = w - margin - vit_w
+        vit_y = bottom_floor - vit_h
+        stat_w = lx(105)
+        bp_w = vit_w - stat_w
+
+        _panel_bg(frame_bgr, vit_x, vit_y, bp_w, vit_h, alpha=0.45)
+        cv2.rectangle(frame_bgr, (vit_x, vit_y), (vit_x + bp_w, vit_y + vit_h), HUD_CYAN_DIM, 1, cv2.LINE_AA)
+
+        vit_pad = lx(15)
+        _text(frame_bgr, "BP   mmHg", (vit_x + vit_pad, vit_y + ly(29)), 1.08 * layout_s, HUD_CYAN_DIM, 1, FONT_SMALL)
+        _text(frame_bgr, "113/90", (vit_x + vit_pad, vit_y + ly(84)), 1.95 * layout_s, HUD_CYAN, 2)
+        _text(frame_bgr, "80", (vit_x + lx(232), vit_y + ly(84)), 1.95 * layout_s, HUD_CYAN, 2)
+        _text(frame_bgr, f"PULSE: {self._vitals['hr']:.0f} bpm", (vit_x + vit_pad, vit_y + ly(132)),
+              1.20 * layout_s, HUD_CYAN_DIM, 1, FONT_SMALL)
+        _text(frame_bgr, f"MOTION: {'STILL' if still else 'ACTIVE'}", (vit_x + vit_pad, vit_y + ly(168)),
+              1.20 * layout_s, HUD_CYAN_DIM, 1, FONT_SMALL)
+
+        stat_x = vit_x + bp_w
+        stat_labels = [
+            ("RR", f"{self._vitals['rr']:.0f}"),
+            ("SPO2", f"{self._vitals['spo2']:.0f}"),
+            ("TEMP", f"{self._vitals['temp']:.0f}"),
+        ]
+        stat_cell_h = vit_h // len(stat_labels)
+        for i, (label, value) in enumerate(stat_labels):
+            cell_y = vit_y + i * stat_cell_h
+            cell_h = stat_cell_h
+            _panel_bg(frame_bgr, stat_x, cell_y, stat_w, cell_h, alpha=0.45)
+            cv2.rectangle(frame_bgr, (stat_x, cell_y), (stat_x + stat_w, cell_y + cell_h), HUD_CYAN_DIM, 1, cv2.LINE_AA)
+            _text(frame_bgr, label, (stat_x + lx(9), cell_y + ly(22)), 0.93 * layout_s, HUD_CYAN_DIM, 1, FONT_SMALL)
+            _text(frame_bgr, value, (stat_x + lx(9), cell_y + cell_h - ly(10)), 1.38 * layout_s, HUD_CYAN, 2)
+
+        # -------------------------------------------------------------
+        # 3. RIGHT COLUMN LAYOUT
+        #    BASELINE brain+graph -> PATIENT brain+graph -> telemetry row
+        #    Column position/width is fixed up-front from the frame edge.
+        # -------------------------------------------------------------
+        right_panel_w = min(int(375 * s), w - margin * 2 - int(200 * s))
+        right_panel_w = max(right_panel_w, int(285 * s))
+        right_x = w - right_panel_w - margin
+
+        brain_w = int(right_panel_w * 0.42)
+        brain_h = int(111 * s)
+        graph_x = right_x + brain_w + int(12 * s)
+        graph_w = right_panel_w - brain_w - int(12 * s)
+
+        # BASELINE row
+        _text(frame_bgr, "BASELINE:", (right_x, content_top + int(9 * s)), 0.78 * s, HUD_CYAN_DIM, 1)
+        row1_y = content_top + int(21 * s)
+        _draw_rgba(frame_bgr, self._brain_img, right_x, row1_y, brain_w, brain_h, opacity=0.8)
+        cv2.rectangle(frame_bgr, (right_x, row1_y), (right_x + brain_w, row1_y + brain_h), HUD_CYAN_DIM, 1)
+
+        _panel_bg(frame_bgr, graph_x, row1_y, graph_w, brain_h, alpha=0.3)
+        cv2.rectangle(frame_bgr, (graph_x, row1_y), (graph_x + graph_w, row1_y + brain_h), HUD_CYAN_DIM, 1)
         self._expr_wave.append(min(1.0, max(0.0, expression_confidence)))
-        sim_val = 0.5 + 0.4 * random.uniform(-1, 1) * 0.3 + 0.1 * (self.frame_index % 20) / 20
+        _waveform_plot(frame_bgr, graph_x, row1_y, graph_w, brain_h, list(self._expr_wave), HUD_CYAN, s)
+
+        # PATIENT row
+        row2_label_y = row1_y + brain_h + int(24 * s)
+        _text(frame_bgr, "PATIENT:", (right_x, row2_label_y), 0.78 * s, HUD_CYAN_DIM, 1)
+        row2_y = row2_label_y + int(12 * s)
+        _draw_rgba(frame_bgr, self._brain_img, right_x, row2_y, brain_w, brain_h, opacity=0.8)
+        cv2.rectangle(frame_bgr, (right_x, row2_y), (right_x + brain_w, row2_y + brain_h), HUD_CYAN_DIM, 1)
+
+        _panel_bg(frame_bgr, graph_x, row2_y, graph_w, brain_h, alpha=0.3)
+        cv2.rectangle(frame_bgr, (graph_x, row2_y), (graph_x + graph_w, row2_y + brain_h), HUD_CYAN_DIM, 1)
+        sim_val = 0.5 + 0.3 * random.uniform(-1, 1)
         self._sim_wave.append(min(1.0, max(0.0, sim_val)))
+        _waveform_plot(frame_bgr, graph_x, row2_y, graph_w, brain_h, list(self._sim_wave), HUD_CYAN_DIM, s)
 
-        panel_w = max(250, int(280 * s))
-        signal_h = max(120, int(150 * s))
-        wave_h = max(80, int(100 * s))
-        vitals_h = max(84, int(112 * s))
-        margin = max(10, int(18 * s))
-        gap = max(4, int(6 * s))
+        # Telemetry row (GnRH / LH / FSH / T / E2 / F)
+        chem_y = row2_y + brain_h + int(21 * s)
+        chem_h = min(int(69 * s), max(bottom_floor - chem_y, int(54 * s)))
+        _panel_bg(frame_bgr, right_x, chem_y, right_panel_w, chem_h, alpha=0.4)
+        cv2.rectangle(frame_bgr, (right_x, chem_y), (right_x + right_panel_w, chem_y + chem_h), HUD_CYAN_DIM, 1)
 
-        _corner_brackets(frame_bgr, s)
-        _reticle(frame_bgr, center, radius, self.frame_index, face_locked, s)
+        labels = "GnRH   LH   FSH   T   E2   F"
+        values = " 79    81   58  170  22  07"
+        _text(frame_bgr, labels, (right_x + int(15 * s), chem_y + int(26 * s)), 1.12 * s, HUD_CYAN_DIM, 1, FONT_SMALL)
+        _text(frame_bgr, values, (right_x + int(15 * s), chem_y + int(53 * s)), 1.20 * s, HUD_CYAN, 1, FONT_SMALL)
 
-        title_scale = max(1.0 * s, MIN_FONT_SCALE)
-        _text(frame_bgr, title, (margin, margin + int(20 * s)), title_scale, HUD_CYAN, 2)
-        cv2.line(frame_bgr, (margin, margin + int(28 * s)),
-                  (margin + int(140 * s), margin + int(28 * s)), HUD_CYAN_DIM, 1)
+        # -------------------------------------------------------------
+        # 4. CENTER RETICLE (drawn after panels so it always reads on top)
+        # -------------------------------------------------------------
+        _reticle(frame_bgr, self._smooth_center, self._smooth_radius, self.frame_index, face_locked, s)
 
-        signal_y = margin + int(36 * s)
-        _signal_panel(frame_bgr, margin, signal_y, panel_w, signal_h, face_locked,
-                      expression_label, expression_confidence, head_down, still, s)
-
-        right_x = w - panel_w - margin
-        _waveform_panel(frame_bgr, right_x, margin, panel_w, wave_h, list(self._expr_wave),
-                         HUD_CYAN, "EXPR CONFIDENCE", s)
-        _waveform_panel(frame_bgr, right_x, margin + wave_h + gap, panel_w, wave_h,
-                         list(self._sim_wave), HUD_CYAN_DIM, "ACTIVITY (SIM)", s)
-
-        bar_h = int(44 * s)
-        _vitals_grid(frame_bgr, margin, h - bar_h - vitals_h - gap * 2, panel_w, vitals_h,
-                     self._vitals, s)
-
-        _status_bar(frame_bgr, tier, tier_message, s)
+        # -------------------------------------------------------------
+        # 5. OUTER FRAME + BOTTOM STATUS BAR
+        # -------------------------------------------------------------
+        floor_y = _status_bar(frame_bgr, tier, tier_message, overlay_s)
+        _frame_border(frame_bgr, overlay_s, floor_y)
 
         return frame_bgr
