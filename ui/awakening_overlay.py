@@ -590,4 +590,4 @@ class AwakeningOverlay(QWidget):
         p.drawText(rect.translated(1.5, 1.5), flags, self.caption_shown)
 
         p.setPen(QPen(QColor(255, 255, 255)))
-        p.drawText(rect, flags, self.caption_shown)gi
+        p.drawText(rect, flags, self.caption_shown)

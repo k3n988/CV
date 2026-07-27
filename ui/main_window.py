@@ -69,7 +69,7 @@ class MainWindow(QMainWindow):
         self._detection_enabled = True
         self._hud_enabled = True
 
-        self.showMaximized()
+        self.showFullScreen()
 
     def _build_ui(self):
         central = QWidget()
@@ -164,8 +164,8 @@ class MainWindow(QMainWindow):
             hands_result = self.hand_detector.detect(small_frame)
             face_bbox_small = self.face_detector.detect(small_frame)
 
-            pose_landmarks = pose_result["all_landmarks"] if pose_result else []
-            for person_landmarks in pose_landmarks:
+            person_landmarks = pose_result.get("landmarks") if pose_result else None
+            if person_landmarks:
                 display_frame = skeleton_drawer.draw_pose_skeleton(display_frame, person_landmarks)
             display_frame = skeleton_drawer.draw_hand_skeleton(display_frame, hands_result)
 
@@ -213,10 +213,10 @@ class MainWindow(QMainWindow):
         rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         h, w, ch = rgb.shape
         bytes_per_line = ch * w
-        
+
         # Clone image buffer safely to prevent memory access glitches in PyQt6
         qimg = QImage(rgb.data, w, h, bytes_per_line, QImage.Format.Format_RGB888).copy()
-        
+
         pixmap = QPixmap.fromImage(qimg)
         self.video_label.setPixmap(
             pixmap.scaled(
