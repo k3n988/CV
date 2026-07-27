@@ -44,7 +44,7 @@ class MainWindow(QMainWindow):
         # --- Pipeline components ---
         self.camera = CameraCapture()
         self.pose_detector = PoseDetector()
-        self.hand_detector = HandDetector(num_hands=10)
+        self.hand_detector = HandDetector(num_hands=2)
         self.face_detector = FaceDetector()
         self.expression_classifier = ExpressionClassifier()
         self.signal_aggregator = SignalAggregator()
@@ -110,7 +110,7 @@ class MainWindow(QMainWindow):
 
         # Shortcut guide for cue performance testing
         self.guide_label = QLabel(
-            "Performance Hotkeys: [Space] Play Full Sequence | [1] Boot | [2] Scan | [3] Diagnosis | [4] Grief | [5] Heal/Embrace | [6] Fist Bump Climax | [Esc/0] Reset"
+            "Hotkeys: [Space] Sequence | [1-6] Story Cues | [7] Anger | [8] Anxiety | [9] Disgust | [0] Embarrass | [.] Power Off | [Esc] Reset"
         )
         self.guide_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.guide_label.setStyleSheet("color: #7C8B99; font-size: 11px;")
@@ -164,8 +164,9 @@ class MainWindow(QMainWindow):
             hands_result = self.hand_detector.detect(small_frame)
             face_bbox_small = self.face_detector.detect(small_frame)
 
-            pose_landmarks = pose_result["landmarks"] if pose_result else None
-            display_frame = skeleton_drawer.draw_pose_skeleton(display_frame, pose_landmarks)
+            pose_landmarks = pose_result["all_landmarks"] if pose_result else []
+            for person_landmarks in pose_landmarks:
+                display_frame = skeleton_drawer.draw_pose_skeleton(display_frame, person_landmarks)
             display_frame = skeleton_drawer.draw_hand_skeleton(display_frame, hands_result)
 
             head_down = pose_result["head_down"] if pose_result else False
@@ -211,9 +212,14 @@ class MainWindow(QMainWindow):
     def _render_frame(self, frame_bgr):
         rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         h, w, ch = rgb.shape
-        qimg = QImage(rgb.data, w, h, ch * w, QImage.Format.Format_RGB888)
+        bytes_per_line = ch * w
+        
+        # Clone image buffer safely to prevent memory access glitches in PyQt6
+        qimg = QImage(rgb.data, w, h, bytes_per_line, QImage.Format.Format_RGB888).copy()
+        
+        pixmap = QPixmap.fromImage(qimg)
         self.video_label.setPixmap(
-            QPixmap.fromImage(qimg).scaled(
+            pixmap.scaled(
                 self.video_label.size(),
                 Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation,
@@ -229,26 +235,34 @@ class MainWindow(QMainWindow):
         event.accept()
 
     def keyPressEvent(self, event):
-        if event.key() in (Qt.Key.Key_Space, Qt.Key.Key_Return):
+        key = event.key()
+
+        # Space or Enter: Play sequence or fallback to cue1
+        if key in (Qt.Key.Key_Space, Qt.Key.Key_Return):
             if hasattr(self.awakening, 'play_sequence'):
                 self.awakening.play_sequence()
-            else:
+            elif hasattr(self.awakening, 'cue1'):
                 self.awakening.cue1()
-        elif event.key() == Qt.Key.Key_1:
-            self.awakening.cue1()
-        elif event.key() == Qt.Key.Key_2:
-            self.awakening.cue2()
-        elif event.key() == Qt.Key.Key_3:
-            self.awakening.cue3()
-        elif event.key() == Qt.Key.Key_4:
-            self.awakening.cue4()
-        elif event.key() == Qt.Key.Key_5:
-            self.awakening.cue5()
-        elif event.key() == Qt.Key.Key_6:
-            self.awakening.cue6()
-        elif event.key() == Qt.Key.Key_7:
-                    self.awakening.cue7()    
-        elif event.key() in (Qt.Key.Key_0, Qt.Key.Key_Escape):
-            self.awakening.reset()
+
+        # Helper method execution for key mappings
+        cue_map = {
+            Qt.Key.Key_1: 'cue1',
+            Qt.Key.Key_2: 'cue2',
+            Qt.Key.Key_3: 'cue3',
+            Qt.Key.Key_4: 'cue4',
+            Qt.Key.Key_5: 'cue5',
+            Qt.Key.Key_6: 'cue6',
+            Qt.Key.Key_7: 'cue7',
+            Qt.Key.Key_8: 'cue8',
+            Qt.Key.Key_9: 'cue9',
+            Qt.Key.Key_0: 'cue0',
+            Qt.Key.Key_Period: 'cue_off',
+            Qt.Key.Key_Escape: 'reset',
+        }
+
+        if key in cue_map:
+            method_name = cue_map[key]
+            if hasattr(self.awakening, method_name):
+                getattr(self.awakening, method_name)()
         else:
             super().keyPressEvent(event)
