@@ -7,3 +7,5 @@ __pycache__/
 
 # Editor/IDE configs
 .vscode/
+__pycache__/
+*.py[cod]
