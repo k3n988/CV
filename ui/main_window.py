@@ -4,9 +4,8 @@ main_window.py
 PyQt6 desktop UI: shows the live webcam feed with a body pose and
 hand/finger skeleton overlay, running detection on every rendered
 frame (single loop) to minimize perceived lag between real movement
-and the on-screen overlay. Optionally also renders a sci-fi
-"diagnostic HUD" (core/hud_overlay.py) driven by the same
-face/expression/posture signals used by the response engine.
+and the on-screen overlay. Optionally renders a sci-fi "diagnostic HUD"
+driven by the response engine signals and the transparent Awakening overlay.
 """
 
 import cv2
@@ -26,16 +25,12 @@ from core.signal_aggregator import SignalAggregator
 from core.response_engine import ResponseEngine
 from core.hud_overlay import HUDOverlay
 from core import skeleton_drawer
+from ui.awakening_overlay import AwakeningOverlay
 
-# Single loop interval -- lower = more responsive, but more CPU load per
-# second. 33ms (~30fps) matches typical webcam frame rate; going lower
-# than your webcam's native fps won't help since there's no new frame yet.
+# Single loop interval -- 33ms (~30fps) matches typical webcam frame rate
 LOOP_INTERVAL_MS = 33
 
-# Detection runs on a downscaled copy of the frame for speed, then
-# coordinates are naturally handled since MediaPipe landmarks are
-# normalized (0.0-1.0), not pixel-based -- so downscaling doesn't need
-# any coordinate correction.
+# Detection runs on a downscaled copy of the frame for speed
 DETECTION_SCALE = 0.5  # process at half resolution
 
 
@@ -44,13 +39,14 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("EmoSense -- Pose & Hand Skeleton Demo")
         self.setMinimumSize(760, 640)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
         # --- Pipeline components ---
         self.camera = CameraCapture()
         self.pose_detector = PoseDetector()
-        self.hand_detector = HandDetector(num_hands=10)  # set to 2 if you need both hands
+        self.hand_detector = HandDetector(num_hands=10)
         self.face_detector = FaceDetector()
-        self.expression_classifier = ExpressionClassifier()  # stub mode if no model file yet
+        self.expression_classifier = ExpressionClassifier()
         self.signal_aggregator = SignalAggregator()
         self.response_engine = ResponseEngine()
         self.hud = HUDOverlay()
@@ -58,8 +54,15 @@ class MainWindow(QMainWindow):
         self.consent_given = False
         self._build_ui()
 
-        # Single timer drives both the video render AND detection --
-        # no separate slower "inference cycle" lagging behind the video.
+        # Instantiate transparent overlay attached on top of video_label
+        self.awakening = AwakeningOverlay(self.video_label)
+        self.awakening.setGeometry(self.video_label.rect())
+        self.awakening.raise_()
+
+        # Synchronize overlay geometry when video label resizes
+        self.video_label.resizeEvent = self._on_video_label_resize
+
+        # Single loop timer for detection & rendering
         self.loop_timer = QTimer()
         self.loop_timer.timeout.connect(self._run_loop)
 
@@ -105,8 +108,24 @@ class MainWindow(QMainWindow):
 
         layout.addLayout(controls)
 
+        # Shortcut guide for cue performance testing
+        self.guide_label = QLabel(
+            "Performance Hotkeys: [Space] Play Full Sequence | [1] Boot | [2] Scan | [3] Diagnosis | [4] Grief | [5] Heal/Embrace | [6] Fist Bump Climax | [Esc/0] Reset"
+        )
+        self.guide_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.guide_label.setStyleSheet("color: #7C8B99; font-size: 11px;")
+        layout.addWidget(self.guide_label)
+
         central.setLayout(layout)
         self.setCentralWidget(central)
+
+    def _on_video_label_resize(self, event):
+        """Keep the overlay perfectly stretched to the video_label dimensions."""
+        if hasattr(self, 'awakening'):
+            self.awakening.setGeometry(self.video_label.rect())
+            self.awakening.raise_()
+        if event:
+            super(QLabel, self.video_label).resizeEvent(event)
 
     def _on_consent_given(self):
         self.consent_given = True
@@ -136,9 +155,6 @@ class MainWindow(QMainWindow):
         display_frame = frame.copy()
 
         if self._detection_enabled:
-            # Detect on a smaller frame for speed -- landmarks are
-            # normalized coordinates, so they map directly onto the
-            # full-size display_frame without any rescaling math.
             small_frame = cv2.resize(
                 frame, None, fx=DETECTION_SCALE, fy=DETECTION_SCALE,
                 interpolation=cv2.INTER_LINEAR,
@@ -155,11 +171,6 @@ class MainWindow(QMainWindow):
             head_down = pose_result["head_down"] if pose_result else False
             still = pose_result["still"] if pose_result else False
 
-            # face_bbox_small is in small_frame's pixel space -- scale it
-            # back up to full-resolution display_frame coordinates (same
-            # normalization-free approach as the skeleton overlays, just
-            # done manually since face bboxes are pixel-based, not
-            # normalized like MediaPipe landmarks).
             face_bbox_full = None
             expression_label, expression_confidence = "neutral", 0.0
             if face_bbox_small is not None:
@@ -216,3 +227,28 @@ class MainWindow(QMainWindow):
         self.hand_detector.close()
         self.face_detector.close()
         event.accept()
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key.Key_Space, Qt.Key.Key_Return):
+            if hasattr(self.awakening, 'play_sequence'):
+                self.awakening.play_sequence()
+            else:
+                self.awakening.cue1()
+        elif event.key() == Qt.Key.Key_1:
+            self.awakening.cue1()
+        elif event.key() == Qt.Key.Key_2:
+            self.awakening.cue2()
+        elif event.key() == Qt.Key.Key_3:
+            self.awakening.cue3()
+        elif event.key() == Qt.Key.Key_4:
+            self.awakening.cue4()
+        elif event.key() == Qt.Key.Key_5:
+            self.awakening.cue5()
+        elif event.key() == Qt.Key.Key_6:
+            self.awakening.cue6()
+        elif event.key() == Qt.Key.Key_7:
+                    self.awakening.cue7()    
+        elif event.key() in (Qt.Key.Key_0, Qt.Key.Key_Escape):
+            self.awakening.reset()
+        else:
+            super().keyPressEvent(event)
