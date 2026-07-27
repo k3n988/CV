@@ -25,7 +25,7 @@ from core.signal_aggregator import SignalAggregator
 from core.response_engine import ResponseEngine
 from core.hud_overlay import HUDOverlay
 from core import skeleton_drawer
-from ui.awakening_overlay import AwakeningOverlay
+from ui.awakening_overlay import AwakeningOverlay, StartupAwakeningOverlay
 
 # Single loop interval -- 33ms (~30fps) matches typical webcam frame rate
 LOOP_INTERVAL_MS = 33
@@ -51,13 +51,15 @@ class MainWindow(QMainWindow):
         self.response_engine = ResponseEngine()
         self.hud = HUDOverlay()
 
-        self.consent_given = False
         self._build_ui()
 
         # Instantiate transparent overlay attached on top of video_label
         self.awakening = AwakeningOverlay(self.video_label)
         self.awakening.setGeometry(self.video_label.rect())
         self.awakening.raise_()
+
+        # Created after fullscreen is established so it covers the real display.
+        self.startup_overlay = None
 
         # Synchronize overlay geometry when video label resizes
         self.video_label.resizeEvent = self._on_video_label_resize
@@ -68,26 +70,15 @@ class MainWindow(QMainWindow):
 
         self._detection_enabled = True
         self._hud_enabled = True
-
-        self.isFullScreen()
+        self.toggle_button.setEnabled(True)
+        self.hud_toggle_button.setEnabled(True)
+        self.loop_timer.start(LOOP_INTERVAL_MS)
 
     def _build_ui(self):
         central = QWidget()
         layout = QVBoxLayout()
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(6)
-
-        self.consent_label = QLabel(
-            "This demo uses your webcam to show a live body pose and hand "
-            "skeleton overlay. No video is stored or transmitted; everything "
-            "runs on this device, this session only."
-        )
-        self.consent_label.setWordWrap(True)
-        layout.addWidget(self.consent_label)
-
-        self.consent_button = QPushButton("I understand -- start detection")
-        self.consent_button.clicked.connect(self._on_consent_given)
-        layout.addWidget(self.consent_button)
 
         self.video_label = QLabel()
         self.video_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -97,12 +88,10 @@ class MainWindow(QMainWindow):
 
         controls = QHBoxLayout()
         self.toggle_button = QPushButton("Pause detection")
-        self.toggle_button.setEnabled(False)
         self.toggle_button.clicked.connect(self._toggle_detection)
         controls.addWidget(self.toggle_button)
 
         self.hud_toggle_button = QPushButton("Hide diagnostic HUD")
-        self.hud_toggle_button.setEnabled(False)
         self.hud_toggle_button.clicked.connect(self._toggle_hud)
         controls.addWidget(self.hud_toggle_button)
 
@@ -127,13 +116,23 @@ class MainWindow(QMainWindow):
         if event:
             super(QLabel, self.video_label).resizeEvent(event)
 
-    def _on_consent_given(self):
-        self.consent_given = True
-        self.consent_label.hide()
-        self.consent_button.hide()
-        self.toggle_button.setEnabled(True)
-        self.hud_toggle_button.setEnabled(True)
-        self.loop_timer.start(LOOP_INTERVAL_MS)
+    def showEvent(self, event):
+        super().showEvent(event)
+        QTimer.singleShot(0, self._show_startup_overlay)
+
+    def _show_startup_overlay(self):
+        if self.startup_overlay is not None:
+            return
+        self.startup_overlay = StartupAwakeningOverlay(self)
+        self.startup_overlay.setGeometry(self.rect())
+        self.startup_overlay.show()
+        self.startup_overlay.raise_()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self.startup_overlay is not None and self.startup_overlay.isVisible():
+            self.startup_overlay.setGeometry(self.rect())
+            self.startup_overlay.raise_()
 
     def _toggle_detection(self):
         self._detection_enabled = not self._detection_enabled

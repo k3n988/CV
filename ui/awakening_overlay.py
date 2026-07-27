@@ -8,8 +8,11 @@ A transparent QWidget overlay that renders emotional beats ("Awakening", "Interv
 import random
 from pathlib import Path
 
-from PyQt6.QtWidgets import QWidget
-from PyQt6.QtCore import Qt, QTimer, QRectF, QPointF, QUrl
+from PyQt6.QtWidgets import QGraphicsOpacityEffect, QWidget
+from PyQt6.QtCore import (
+    Qt, QTimer, QRectF, QPointF, QUrl, QEasingCurve, QPauseAnimation,
+    QPropertyAnimation, QSequentialAnimationGroup, pyqtProperty,
+)
 from PyQt6.QtGui import QPainter, QColor, QPen, QFont, QLinearGradient, QRadialGradient
 from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
 
@@ -65,6 +68,133 @@ AUDIO_FILES = {
 }
 
 
+class StartupAwakeningOverlay(QWidget):
+    """Fullscreen black gate that reveals the already-running CV UI on Enter."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self._started = False
+        self._line_progress = 0.0
+        self._flash_progress = 0.0
+        self._flash_opacity = 1.0
+        self._opacity_effect = QGraphicsOpacityEffect(self)
+        self._opacity_effect.setOpacity(1.0)
+        self.setGraphicsEffect(self._opacity_effect)
+        self._sequence = QSequentialAnimationGroup(self)
+        self._sequence.finished.connect(self._finish)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        QTimer.singleShot(0, self._claim_keyboard)
+
+    def _claim_keyboard(self):
+        self.setFocus()
+        self.grabKeyboard()
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self.start_transition()
+        event.accept()
+
+    def start_transition(self):
+        if self._started:
+            return
+        self._started = True
+
+        line = QPropertyAnimation(self, b"lineProgress", self)
+        line.setDuration(140)
+        line.setStartValue(0.0)
+        line.setEndValue(1.0)
+        line.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+        expand = QPropertyAnimation(self, b"flashProgress", self)
+        expand.setDuration(360)
+        expand.setStartValue(0.0)
+        expand.setEndValue(1.0)
+        expand.setEasingCurve(QEasingCurve.Type.InOutCubic)
+
+        fade = QPropertyAnimation(self, b"flashOpacity", self)
+        fade.setDuration(680)
+        fade.setStartValue(1.0)
+        fade.setEndValue(0.0)
+        fade.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+        self._sequence.addAnimation(line)
+        self._sequence.addAnimation(expand)
+        self._sequence.addAnimation(QPauseAnimation(120, self))
+        self._sequence.addAnimation(fade)
+        self._sequence.start()
+
+    def _finish(self):
+        parent = self.parentWidget()
+        self.releaseKeyboard()
+        self.hide()
+        self.deleteLater()
+        if parent is not None:
+            parent.setFocus()
+
+    def _get_line_progress(self):
+        return self._line_progress
+
+    def _set_line_progress(self, value):
+        self._line_progress = float(value)
+        self.update()
+
+    lineProgress = pyqtProperty(float, _get_line_progress, _set_line_progress)
+
+    def _get_flash_progress(self):
+        return self._flash_progress
+
+    def _set_flash_progress(self, value):
+        self._flash_progress = float(value)
+        self.update()
+
+    flashProgress = pyqtProperty(float, _get_flash_progress, _set_flash_progress)
+
+    def _get_flash_opacity(self):
+        return self._flash_opacity
+
+    def _set_flash_opacity(self, value):
+        self._flash_opacity = float(value)
+        self._opacity_effect.setOpacity(self._flash_opacity)
+        self.update()
+
+    flashOpacity = pyqtProperty(float, _get_flash_opacity, _set_flash_opacity)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), Qt.GlobalColor.black)
+
+        center_y = self.height() // 2
+        if self._flash_progress <= 0.0 and self._line_progress > 0.0:
+            half_width = max(8, int(self.width() * self._line_progress / 2))
+            painter.setPen(QPen(QColor(180, 245, 255, 80), 10))
+            painter.drawLine(self.width() // 2 - half_width, center_y,
+                             self.width() // 2 + half_width, center_y)
+            painter.setPen(QPen(QColor(240, 255, 255), 2))
+            painter.drawLine(self.width() // 2 - half_width, center_y,
+                             self.width() // 2 + half_width, center_y)
+
+        if self._flash_progress > 0.0:
+            progress = self._flash_progress
+            radius_x = max(12, self.width() * (0.08 + 0.42 * progress))
+            radius_y = max(3, self.height() * progress * 0.5)
+            bloom = QRadialGradient(self.width() / 2, center_y, max(radius_x, radius_y))
+            bloom.setColorAt(0.0, QColor(255, 255, 255))
+            bloom.setColorAt(0.6, QColor(225, 252, 255))
+            bloom.setColorAt(1.0, QColor(180, 245, 255))
+            painter.save()
+            painter.setClipRect(QRectF(self.width() / 2 - radius_x, center_y - radius_y,
+                                       radius_x * 2, radius_y * 2))
+            painter.fillRect(self.rect(), bloom)
+            painter.restore()
+            if progress >= 0.98:
+                painter.fillRect(self.rect(), Qt.GlobalColor.white)
+        painter.end()
+
+
 class HeartParticle:
     __slots__ = ('x', 'y', 'vx', 'vy', 'size', 'alpha', 'decay')
 
@@ -99,7 +229,7 @@ class AwakeningOverlay(QWidget):
         self.caption_full = ""
         self.caption_shown = ""
         self.status_word = "STANDBY"
-        self.subj_word = "—"
+        self.subj_word = "?"
 
         self.particles = []
         self.glove_scale = 0.0
@@ -168,7 +298,7 @@ class AwakeningOverlay(QWidget):
         self.concern_alpha = 0.0
         self.blackout_alpha = 0.0
         self.status_word = "STANDBY"
-        self.subj_word = "—"
+        self.subj_word = "?"
         self.particles.clear()
         self.glove_scale = 0.0
         self.jitter_offset = QPointF(0, 0)
@@ -498,7 +628,7 @@ class AwakeningOverlay(QWidget):
             ],
             "embarrassment": [
                 ("SUBJECT A -- VITALS", HUD),
-                ("FACIAL TEMP: 37.8°C (FLUSH)", EMBARRASSMENT),
+                ("FACIAL TEMP: 37.8?C (FLUSH)", EMBARRASSMENT),
                 ("VASODILATION: HIGH", EMBARRASSMENT),
                 ("AFFECT: SOCIAL DISTRESS", EMBARRASSMENT),
                 ("RECOMMEND: REASSURANCE", FRAME),
@@ -556,7 +686,7 @@ class AwakeningOverlay(QWidget):
         for pt in self.particles:
             p.setOpacity(max(0.0, min(1.0, pt.alpha)))
             p.setPen(QPen(HEAL))
-            p.drawText(int(pt.x), int(pt.y), "♥")
+            p.drawText(int(pt.x), int(pt.y), "?")
         p.setOpacity(1.0)
 
     def _draw_baymax_glove(self, p: QPainter, w: int, h: int):
